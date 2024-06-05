@@ -1,127 +1,91 @@
-"""Pytorch dataset object that loads MNIST dataset as bags."""
+"""This data loader is inspired by https://github.com/AMLab-Amsterdam/AttentionDeepMIL
+
+    The input data into the model training and inference should have the shape as B x N_seq x E
+    B : batch size
+    N_seq : the maximum length of the bag, if the number of samples in a bag is less than N_seq, the pad with mask embedding
+    E : embedding size for the image/text/other object
+
+    For simulated dataloader, e.g. bags of the MNST data, we have the embedding already saved on disk, following the strategy in the AttentionDeepMIL to generate random bags and label. 
+    We modified the model architecture to support batch, so we use batch generator to generate random bags
+
+    For the real dataset, the embedding should be applied to the images first and saved on the disk. The dataloader will read the data sample and pad with zeros to the max length 
+    if the length of the sample is less than max bag length. 
+
+"""
 
 import numpy as np
 import torch
 import torch.utils.data as data_utils
-from torchvision import datasets, transforms
 
 
-class MnistBags(data_utils.Dataset):
-    def __init__(self, target_number=9, mean_bag_length=10, var_bag_length=2, num_bag=250, seed=1, train=True):
+class MnistBagsGenerator:
+    def __init__(self, 
+                 embedding_tensor_path, 
+                 label_tensor_path,
+                 batch_size=64,
+                 bag_length_dist="normal",
+                 max_bag_length = 30, 
+                 mean_bag_length=20, 
+                 target_number=9, 
+                 var_bag_length=5, 
+                 num_bag=250, 
+                 seed=1, 
+                 ):
+        self.batch_size = batch_size 
         self.target_number = target_number
+        self.bag_length_dist = bag_length_dist
+        self.max_bag_length = max_bag_length
         self.mean_bag_length = mean_bag_length
         self.var_bag_length = var_bag_length
         self.num_bag = num_bag
-        self.train = train
-
-        self.r = np.random.RandomState(seed)
-
-        self.num_in_train = 60000
-        self.num_in_test = 10000
-
-        if self.train:
-            self.train_bags_list, self.train_labels_list = self._create_bags()
-        else:
-            self.test_bags_list, self.test_labels_list = self._create_bags()
-
-    def _create_bags(self):
-        if self.train:
-            loader = data_utils.DataLoader(datasets.MNIST('../datasets',
-                                                          train=True,
-                                                          download=True,
-                                                          transform=transforms.Compose([
-                                                              transforms.ToTensor(),
-                                                              transforms.Normalize((0.1307,), (0.3081,))])),
-                                           batch_size=self.num_in_train,
-                                           shuffle=False)
-        else:
-            loader = data_utils.DataLoader(datasets.MNIST('../datasets',
-                                                          train=False,
-                                                          download=True,
-                                                          transform=transforms.Compose([
-                                                              transforms.ToTensor(),
-                                                              transforms.Normalize((0.1307,), (0.3081,))])),
-                                           batch_size=self.num_in_test,
-                                           shuffle=False)
-
-        for (batch_data, batch_labels) in loader:
-            all_imgs = batch_data
-            all_labels = batch_labels
-
-        bags_list = []
-        labels_list = []
-
-        for i in range(self.num_bag):
-            bag_length = np.int(self.r.normal(self.mean_bag_length, self.var_bag_length, 1))
-            if bag_length < 1:
-                bag_length = 1
-
-            if self.train:
-                indices = torch.LongTensor(self.r.randint(0, self.num_in_train, bag_length))
-            else:
-                indices = torch.LongTensor(self.r.randint(0, self.num_in_test, bag_length))
-
-            labels_in_bag = all_labels[indices]
-            labels_in_bag = labels_in_bag == self.target_number
-
-            bags_list.append(all_imgs[indices])
-            labels_list.append(labels_in_bag)
-
-        return bags_list, labels_list
+        self.embedding = torch.load(embedding_tensor_path) # MNST train size x embedding size
+        self.labels = torch.load(label_tensor_path)
+        self.embedding_size = self.embedding.shape[1]
+        assert len(self.embedding) == len(self.labels), "Number of embedding is different from number of labels, please double check your data"
+        self.seed = seed
 
     def __len__(self):
-        if self.train:
-            return len(self.train_labels_list)
-        else:
-            return len(self.test_labels_list)
+        return self.num_bag 
 
-    def __getitem__(self, index):
-        if self.train:
-            bag = self.train_bags_list[index]
-            label = [max(self.train_labels_list[index]), self.train_labels_list[index]]
-        else:
-            bag = self.test_bags_list[index]
-            label = [max(self.test_labels_list[index]), self.test_labels_list[index]]
-
-        return bag, label
+    def dataloader(self, random_seed=None, return_indices=False):
+        if(random_seed is not None):
+            self.seed = random_seed
+        np.random.seed(self.seed)
+        for _ in range(self.num_bag):
+            ## Generate B x n_seq random numbers
+            batched_random_indices = np.random.randint(len(self.embedding), size=(self.batch_size, self.max_bag_length))
+            if self.bag_length_dist == "normal":
+                random_bag_lengths = np.clip(np.random.normal(self.mean_bag_length, self.var_bag_length, size=(self.batch_size)).astype(int), 1, self.max_bag_length)
+            elif self.bag_length_dist == "poisson":
+                random_bag_lengths = np.clip(np.random.poisson(self.mean_bag_length, size=(self.batch_size)).astype(int), 1, self.max_bag_length)
+            else: 
+                random_bag_lengths = np.clip(np.random.poisson(self.mean_bag_length, size=(self.batch_size)).astype(int), 1, self.max_bag_length)
+            attention_mask = torch.zeros((self.batch_size, self.max_bag_length), dtype=(torch.float32))
+            for i, l_ in enumerate(random_bag_lengths):
+                attention_mask[i, :l_] = 1 
+            input_tensor = torch.zeros((self.batch_size, self.max_bag_length, self.embedding_size), dtype=(torch.float32))
+            for i in range(self.batch_size):
+                input_tensor[i] = self.embedding[batched_random_indices[i]]
+            label_tensor = torch.zeros((self.batch_size), dtype=(torch.float32))
+            for i in range(self.batch_size):
+                label_tensor[i] = torch.any(self.labels[batched_random_indices[i]][:random_bag_lengths[i]] == self.target_number)
+            if return_indices:
+                yield input_tensor, label_tensor, attention_mask, torch.tensor(batched_random_indices)
+            else:
+                yield input_tensor, label_tensor, attention_mask
 
 
 if __name__ == "__main__":
 
-    train_loader = data_utils.DataLoader(MnistBags(target_number=9,
-                                                   mean_bag_length=10,
-                                                   var_bag_length=2,
-                                                   num_bag=100,
-                                                   seed=1,
-                                                   train=True),
-                                         batch_size=1,
-                                         shuffle=True)
+    train_loader = MnistBagsGenerator(embedding_tensor_path="../datasets/mnst_train_dinov2_small.pt", 
+                                      label_tensor_path="../datasets/mnst_train_labels.pt", 
+                                      target_number=9, 
+                                      max_bag_length=30, 
+                                      num_bag=1000)
+    
+    print("There are %i bags"%(len(train_loader)))
+    for batch_i, (inp_, label_, mask_) in enumerate(train_loader.dataloader()):
+        assert len(label_) == len(inp_), "label and input tensor should have the same batch size"
+        # print(batch_i)
 
-    test_loader = data_utils.DataLoader(MnistBags(target_number=9,
-                                                  mean_bag_length=10,
-                                                  var_bag_length=2,
-                                                  num_bag=100,
-                                                  seed=1,
-                                                  train=False),
-                                        batch_size=1,
-                                        shuffle=False)
-
-    len_bag_list_train = []
-    mnist_bags_train = 0
-    for batch_idx, (bag, label) in enumerate(train_loader):
-        len_bag_list_train.append(int(bag.squeeze(0).size()[0]))
-        mnist_bags_train += label[0].numpy()[0]
-    print('Number positive train bags: {}/{}\n'
-          'Number of instances per bag, mean: {}, max: {}, min {}\n'.format(
-        mnist_bags_train, len(train_loader),
-        np.mean(len_bag_list_train), np.max(len_bag_list_train), np.min(len_bag_list_train)))
-
-    len_bag_list_test = []
-    mnist_bags_test = 0
-    for batch_idx, (bag, label) in enumerate(test_loader):
-        len_bag_list_test.append(int(bag.squeeze(0).size()[0]))
-        mnist_bags_test += label[0].numpy()[0]
-    print('Number positive test bags: {}/{}\n'
-          'Number of instances per bag, mean: {}, max: {}, min {}\n'.format(
-        mnist_bags_test, len(test_loader),
-        np.mean(len_bag_list_test), np.max(len_bag_list_test), np.min(len_bag_list_test)))
+    
