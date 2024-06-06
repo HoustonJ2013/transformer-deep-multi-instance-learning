@@ -6,7 +6,7 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from dataloader import MnistBagsGenerator
+from dataloader import MnstBagsGenerator, NumpyDataset, NumpyGenerator
 from modelMIL import MILAttention
 from torchmetrics.classification import BinaryF1Score
 
@@ -36,6 +36,27 @@ def get_args_parser():
     )
 
     # parameter for data
+
+    parser.add_argument(
+        "--loader_type",
+        default="MnstBagsGenerator",
+        type=str,
+        choices=["MnstBagsGenerator", "NumpyGenerator"],
+        help="""the type of dataloader""",
+    )
+    parser.add_argument(
+        "--mnst_train_inp_csv",
+        default="datasets/mnst_train.csv",
+        type=str,
+        help="""The path to the csv contain train data""",
+    )
+    parser.add_argument(
+        "--mnst_test_inp_csv",
+        default="datasets/mnst_test.csv",
+        type=str,
+        help="""The path to the csv contain test data""",
+    )
+
     parser.add_argument(
         "--mnst_train_inp_path",
         default="datasets/mnst_train_dinov2_small.pt",
@@ -69,8 +90,14 @@ def get_args_parser():
         help="""the random bag length distribution""",
     )
     parser.add_argument(
-        "--mnst_max_bag_length",
-        default=20,
+        "--max_bag_length",
+        default=40,
+        type=int,
+        help="""num of bags in the training set""",
+    )
+    parser.add_argument(
+        "--test_max_bag_length",
+        default=40,
         type=int,
         help="""num of bags in the training set""",
     )
@@ -149,7 +176,7 @@ def get_args_parser():
     return parser
 
 
-def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, refresh_freq=50):
+def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, refresh_freq=10):
 
     loss_values = []
     ## When the attention_model is light weighted, most of the time is on I/O, copying the data
@@ -245,31 +272,45 @@ def explain_model(attention_model, test_loader, epoch, output_path="datasets/tes
 def train(args):
 
     ## define dataloader
-    train_loader = MnistBagsGenerator(
-        embedding_tensor_path=args.mnst_train_inp_path,
-        label_tensor_path=args.mnst_train_label_path,
-        batch_size=args.batch_size,
-        target_number=9,
-        bag_length_dist=args.mnst_bag_length_dist,
-        max_bag_length=args.mnst_max_bag_length,
-        mean_bag_length=args.mnst_mean_bag_length,
-        var_bag_length=args.mnst_var_bag_length,
-        num_bag=args.num_bags_train,
-        load_to_gpu=args.mnst_load_to_gpu,
-    )
+    if args.loader_type == "MnstBagsGenerator":
+        train_loader = MnstBagsGenerator(
+            embedding_tensor_path=args.mnst_train_inp_path,
+            label_tensor_path=args.mnst_train_label_path,
+            batch_size=args.batch_size,
+            target_number=9,
+            bag_length_dist=args.mnst_bag_length_dist,
+            max_bag_length=args.max_bag_length,
+            mean_bag_length=args.mnst_mean_bag_length,
+            var_bag_length=args.mnst_var_bag_length,
+            num_bag=args.num_bags_train,
+            load_to_gpu=args.mnst_load_to_gpu,
+        )
 
-    test_loader = MnistBagsGenerator(
-        embedding_tensor_path=args.mnst_test_inp_path,
-        label_tensor_path=args.mnst_test_label_path,
-        batch_size=64,
-        target_number=9,
-        bag_length_dist="normal",
-        max_bag_length=25,
-        mean_bag_length=12,
-        var_bag_length=5,
-        num_bag=500,
-        load_to_gpu=args.mnst_load_to_gpu,
-    )
+        test_loader = MnstBagsGenerator(
+            embedding_tensor_path=args.mnst_test_inp_path,
+            label_tensor_path=args.mnst_test_label_path,
+            batch_size=64,
+            target_number=9,
+            bag_length_dist="normal",
+            max_bag_length=25,
+            mean_bag_length=12,
+            var_bag_length=5,
+            num_bag=500,
+            load_to_gpu=args.mnst_load_to_gpu,
+        )
+    elif args.loader_type == "NumpyGenerator":
+        train_dataset = NumpyDataset(inp_csv=args.mnst_train_inp_csv, max_bag_length=args.max_bag_length)
+        train_loader = NumpyGenerator(
+            train_dataset, batch_size=args.batch_size, num_workers=4, pin_memory=True, shuffle=True, drop_last=True
+        )
+
+        test_dataset = NumpyDataset(inp_csv=args.mnst_test_inp_csv, max_bag_length=args.test_max_bag_length)
+        test_loader = NumpyGenerator(
+            test_dataset, batch_size=args.batch_size, num_workers=4, shuffle=False, drop_last=True
+        )
+    else:
+        train_loader = None
+        test_loader = None
 
     ## define model, optimizer and loss
     attention_model = MILAttention()

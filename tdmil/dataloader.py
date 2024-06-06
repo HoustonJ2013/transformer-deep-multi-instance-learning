@@ -14,11 +14,12 @@
 """
 
 import numpy as np
+import pandas as pd
 import torch
-import torch.utils.data as data_utils
+import torch.nn.functional as F
 
 
-class MnistBagsGenerator:
+class MnstBagsGenerator:
     def __init__(
         self,
         embedding_tensor_path,
@@ -99,9 +100,53 @@ class MnistBagsGenerator:
                 yield input_tensor, label_tensor, attention_mask
 
 
+class NumpyDataset:
+    def __init__(
+        self, inp_csv, array_path_col="array_path", target_col="target", bag_length_col="bag_length", max_bag_length=40
+    ):
+        self.df = pd.read_csv(inp_csv).reset_index(drop=True)
+        self.array_path_col = array_path_col
+        self.target_col = target_col
+        self.bag_length_col = bag_length_col
+        self.max_bag_length = max_bag_length
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, index):
+        try:
+            np_path = self.df.loc[index, self.array_path_col]
+            label = self.df.loc[index, self.target_col]
+            np_array = np.load(np_path)
+            np.random.shuffle(np_array)
+            bag_length = len(np_array)
+            attention_mask = torch.ones((self.max_bag_length), dtype=(torch.float32))
+            if bag_length < self.max_bag_length:
+                np_array = np.pad(
+                    np_array, ((0, self.max_bag_length - bag_length), (0, 0)), "constant", constant_values=(0, 0)
+                )
+            else:
+                np_array = np_array[: self.max_bag_length, :]
+                attention_mask[self.max_bag_length :] = 0
+            return torch.tensor(np_array), torch.tensor(label, dtype=torch.float32), attention_mask
+        except:
+            return None, None, None
+
+
+class NumpyGenerator:
+    def __init__(self, dataset, *argv, **kwargs):
+        self.loader = torch.utils.data.DataLoader(dataset, *argv, **kwargs)
+
+    def __len__(self):
+        return len(self.loader)
+
+    def dataloader(self, random_seed=None):
+        return self.loader
+
+
 if __name__ == "__main__":
 
-    train_loader = MnistBagsGenerator(
+    train_loader = MnstBagsGenerator(
         embedding_tensor_path="../datasets/mnst_train_dinov2_small.pt",
         label_tensor_path="../datasets/mnst_train_labels.pt",
         target_number=9,
@@ -113,3 +158,10 @@ if __name__ == "__main__":
     for batch_i, (inp_, label_, mask_) in enumerate(train_loader.dataloader()):
         assert len(label_) == len(inp_), "label and input tensor should have the same batch size"
         # print(batch_i)
+
+    dataset = NumpyDataset(inp_csv="../datasets/mnst_test.csv")
+    train_loader2 = NumpyGenerator(dataset, batch_size=128, num_workers=4, pin_memory=True, drop_last=True)
+    print(len(train_loader2))
+    for batch_i, (inp_, label_, mask_) in enumerate(train_loader2.dataloader()):
+        assert len(label_) == len(inp_), "label and input tensor should have the same batch size"
+        print(batch_i)
