@@ -7,6 +7,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install \
     black \
     flake8 \
+    h5py \ 
     isort \
     jupyter \
     jupyterlab \

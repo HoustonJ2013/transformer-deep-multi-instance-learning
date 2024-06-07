@@ -6,7 +6,7 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from dataloader import MnstBagsGenerator, NumpyDataset, NumpyGenerator
+from dataloader import MnstBagsGenerator, NumpyConcurrentGenerator, NumpyDataset, NumpyGenerator
 from modelMIL import MILAttention
 from torchmetrics.classification import BinaryF1Score
 
@@ -41,7 +41,7 @@ def get_args_parser():
         "--loader_type",
         default="MnstBagsGenerator",
         type=str,
-        choices=["MnstBagsGenerator", "NumpyGenerator"],
+        choices=["MnstBagsGenerator", "NumpyGenerator", "NumpyConcurrentGenerator"],
         help="""the type of dataloader""",
     )
     parser.add_argument(
@@ -176,14 +176,15 @@ def get_args_parser():
     return parser
 
 
-def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, refresh_freq=10):
+def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches, refresh_freq=2):
 
     loss_values = []
     ## When the attention_model is light weighted, most of the time is on I/O, copying the data
     ## from cpu to GPU.
+    refresh_freq = max([1, int(n_batches * 0.01)])
     for batch_i, (inp_, label_, mask_) in enumerate(train_loader.dataloader(random_seed=epoch)):
         if batch_i % refresh_freq == 0:
-            print("step %i at epoch %i \r" % (batch_i, epoch), end="", flush=True)
+            print("step %i/%i at epoch %i \r" % (batch_i, n_batches, epoch), end="", flush=True)
         if args.gpu:
             inp_ = inp_.cuda(non_blocking=True)
             label_ = label_.cuda(non_blocking=True)
@@ -298,6 +299,7 @@ def train(args):
             num_bag=500,
             load_to_gpu=args.mnst_load_to_gpu,
         )
+        n_batches = len(train_loader)
     elif args.loader_type == "NumpyGenerator":
         train_dataset = NumpyDataset(inp_csv=args.mnst_train_inp_csv, max_bag_length=args.max_bag_length)
         train_loader = NumpyGenerator(
@@ -308,10 +310,11 @@ def train(args):
         test_loader = NumpyGenerator(
             test_dataset, batch_size=args.batch_size, num_workers=4, shuffle=False, drop_last=True
         )
+        n_batches = len(train_loader)
     else:
-        train_loader = None
-        test_loader = None
-
+        train_loader = NumpyConcurrentGenerator(args.mnst_train_inp_csv, batch_size=args.batch_size, max_threads=1024)
+        test_loader = NumpyConcurrentGenerator(args.mnst_test_inp_csv, batch_size=args.batch_size, max_threads=1024)
+        n_batches = (len(train_loader) + args.batch_size - 1) // (args.batch_size)
     ## define model, optimizer and loss
     attention_model = MILAttention()
     if args.gpu:
@@ -324,7 +327,7 @@ def train(args):
 
     start_epoch = 0
     for epoch in range(start_epoch, args.num_epoch):
-        train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch)
+        train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches)
         if epoch % 5 == 0:
             eval_model(attention_model, test_loader, epoch)
     eval_model(attention_model, test_loader, epoch)
