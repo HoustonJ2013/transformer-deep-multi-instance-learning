@@ -43,6 +43,18 @@ def get_args_parser():
         help="""save checkpoint for every n step""",
     )
     parser.add_argument(
+        "--eval_frequency",
+        default=4,
+        type=int,
+        help="""run evaluation for every n step""",
+    )
+    parser.add_argument(
+        "--load_from_checkpoint",
+        action="store_false",
+        help="Continue training from the existing checkpoint from the checkpoint folder",
+    )
+
+    parser.add_argument(
         "--config_file",
         nargs="?",
         type=str,
@@ -190,16 +202,30 @@ def get_args_parser():
     return parser
 
 
-def save_checkpoint(model, optimizer, epoch, loss, args){
-    test_folder = os.path.join(args.model_weights, args.test_name)
+def save_checkpoint(model, optimizer, epoch, loss, args):
+    test_folder = os.path.join(args.checkpoint_path, args.test_name)
+    if os.path.exists(test_folder) is False:
+        os.makedirs(test_folder, exist_ok=True)
     filename = "checkpoint_%05d.pt"%(epoch)
     
     torch.save({"epoch": epoch, 
                 "model_state_dict": model.state_dict(), 
                 "optimizer_state_dict": optimizer.state_dict(),
                 "loss": loss,}, os.path.join(test_folder, filename))
-}
+    return 
 
+def load_checkpoint(model, optimizer, args):
+    test_folder = os.path.join(args.checkpoint_path, args.test_name)
+    if os.path.exists(test_folder) is False:
+        os.makedirs(test_folder, exist_ok=True)
+    filename_lastest = sorted([_ for _ in os.listdir(test_folder)])[-1]
+    checkpoint = torch.load(os.path.join(test_folder, filename_lastest))
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    epoch = checkpoint['epoch']
+    loss = checkpoint['loss']
+
+    return epoch, loss 
 
 def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches, refresh_freq=2):
 
@@ -337,7 +363,7 @@ def train(args):
 
         test_dataset = NumpyDataset(inp_csv=args.mnst_test_inp_csv, max_bag_length=args.test_max_bag_length)
         test_loader = NumpyGenerator(
-            test_dataset, batch_size=args.batch_size, num_workers=4, shuffle=False, drop_last=True
+            test_dataset, batch_size=args.batch_size, num_workers=4, shuffle=False
         )
         n_batches = len(train_loader)
     else:
@@ -354,11 +380,15 @@ def train(args):
     else:
         loss_fn = nn.CrossEntropyLoss()
 
-    start_epoch = 0
-    loss_val = 0
+    ## start training 
+    if args.load_from_checkpoint:
+        start_epoch, loss_val = load_checkpoint(attention_model, optimizer, args)
+    else:
+        start_epoch = 0
+        loss_val = 0
     for epoch in range(start_epoch, args.num_epoch):
         loss_val = train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches)
-        if epoch % 5 == 0:
+        if epoch > 0 and epoch % args.eval_frequency == 0:
             eval_model(attention_model, test_loader, epoch, n_batches)
         if epoch > 0 and epoch % args.save_checkpoint_epoch == 0:
             save_checkpoint(attention_model, optimizer, epoch, loss_val, args) 
