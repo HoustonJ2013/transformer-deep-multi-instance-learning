@@ -223,37 +223,37 @@ class NumpyConcurrentGenerator:
                 yield input_tensor, label_tensor, attention_mask
 
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
 
-#     train_loader = MnstBagsGenerator(
-#         embedding_tensor_path="datasets/mnst_train_dinov2_small.pt",
-#         label_tensor_path="datasets/mnst_train_labels.pt",
-#         target_number=9,
-#         max_bag_length=30,
-#         num_bag=250,
-#     )
-#     t0 = time()
-#     print("There are %i bags" % (len(train_loader)))
-#     for batch_i, (inp_, label_, mask_) in enumerate(train_loader.dataloader()):
-#         assert len(label_) == len(inp_), "label and input tensor should have the same batch size"
+    train_loader = MnstBagsGenerator(
+        embedding_tensor_path="datasets/mnst_train_dinov2_small.pt",
+        label_tensor_path="datasets/mnst_train_labels.pt",
+        target_number=9,
+        max_bag_length=30,
+        num_bag=250,
+    )
+    t0 = time()
+    print("There are %i bags" % (len(train_loader)))
+    for batch_i, (inp_, label_, mask_) in enumerate(train_loader.dataloader()):
+        assert len(label_) == len(inp_), "label and input tensor should have the same batch size"
 
-#     print("MnstBagsGenerator takes %0.2f secs to generate %i samples"%(time() - t0, 64 * 250))
+    print("MnstBagsGenerator takes %0.2f secs to generate %i samples"%(time() - t0, 64 * 250))
 
-#     t1 = time()
-#     dataset = NumpyDataset(inp_csv="datasets/mnst_small.csv")
-#     train_loader2 = NumpyGenerator(dataset, batch_size=128, num_workers=4, pin_memory=True, shuffle=True, drop_last=True)
-#     for batch_i, (inp_, label_, mask_) in enumerate(train_loader2.dataloader()):
-#         assert len(label_) == len(inp_), "label and input tensor should have the same batch size"
-#         # print(batch_i)
-#     t2 = time()
-#     print("NumpyGenerator takes %0.3f secs to generate %i samples"%(t2 - t1, len(dataset)))
+    t1 = time()
+    dataset = NumpyDataset(inp_csv="datasets/mnst_small.csv")
+    train_loader2 = NumpyGenerator(dataset, batch_size=128, num_workers=4, pin_memory=True, shuffle=True, drop_last=True)
+    for batch_i, (inp_, label_, mask_) in enumerate(train_loader2.dataloader()):
+        assert len(label_) == len(inp_), "label and input tensor should have the same batch size"
+        # print(batch_i)
+    t2 = time()
+    print("NumpyGenerator takes %0.3f secs to generate %i samples"%(t2 - t1, len(dataset)))
 
-#     t3 = time()
-#     train_loader3 = NumpyConcurrentGenerator("datasets/mnst_small.csv",
-#                                              batch_size=1024 * 4,
-#                                              max_threads=1024 * 2)
-#     for batch_i, (inp_, label_, mask_) in enumerate(train_loader3.dataloader()):
-#         assert len(label_) == len(inp_), "label and input tensor should have the same batch size"
-#         # print(batch_i)
-#     t4 = time()
-#     print("NumpyConcurrentGenerator takes %0.3f secs to generate %i samples"%(t4 - t3, len(train_loader3)))
+    t3 = time()
+    train_loader3 = NumpyConcurrentGenerator("datasets/mnst_small.csv",
+                                             batch_size=1024 * 4,
+                                             max_threads=1024 * 2)
+    for batch_i, (inp_, label_, mask_) in enumerate(train_loader3.dataloader()):
+        assert len(label_) == len(inp_), "label and input tensor should have the same batch size"
+        # print(batch_i)
+    t4 = time()
+    print("NumpyConcurrentGenerator takes %0.3f secs to generate %i samples"%(t4 - t3, len(train_loader3)))

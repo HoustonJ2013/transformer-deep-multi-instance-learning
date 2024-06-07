@@ -1,6 +1,7 @@
 import argparse
 
 import numpy as np
+import os
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
@@ -27,6 +28,19 @@ def get_args_parser():
         default="vanilla",
         type=str,
         help="""The name for the trainning test""",
+    )
+
+    parser.add_argument(
+        "--checkpoint_path",
+        default="model_weights/",
+        type=str,
+        help="""The folder to save model weights""",
+    )
+    parser.add_argument(
+        "--save_checkpoint_epoch",
+        default=4,
+        type=int,
+        help="""save checkpoint for every n step""",
     )
     parser.add_argument(
         "--config_file",
@@ -176,6 +190,17 @@ def get_args_parser():
     return parser
 
 
+def save_checkpoint(model, optimizer, epoch, loss, args){
+    test_folder = os.path.join(args.model_weights, args.test_name)
+    filename = "checkpoint_%05d.pt"%(epoch)
+    
+    torch.save({"epoch": epoch, 
+                "model_state_dict": model.state_dict(), 
+                "optimizer_state_dict": optimizer.state_dict(),
+                "loss": loss,}, os.path.join(test_folder, filename))
+}
+
+
 def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches, refresh_freq=2):
 
     loss_values = []
@@ -197,12 +222,16 @@ def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_
         optimizer.step()
         loss_values.append(loss.item())
     print("loss at epoch %i is %f" % (epoch, np.mean(loss_values)))
+    return np.mean(loss_values)
 
 
-def eval_model(attention_model, test_loader, epoch):
+def eval_model(attention_model, test_loader, epoch, n_batches):
     true_labels = []
     pred_labels = []
+    refresh_freq = max([1, int(n_batches * 0.01)])
     for batch_i, (inp_, label_, mask_) in enumerate(test_loader.dataloader()):
+        if batch_i % refresh_freq == 0:
+            print("step %i/%i at epoch %i \r" % (batch_i, n_batches, epoch), end="", flush=True)
         if args.gpu:
             inp_ = inp_.cuda(non_blocking=True)
             mask_ = mask_.cuda(non_blocking=True)
@@ -217,7 +246,7 @@ def eval_model(attention_model, test_loader, epoch):
     true_labels = torch.concat(true_labels)
     pred_labels = torch.concat(pred_labels)
     metric = BinaryF1Score()
-    f1 = metric(1 - pred_labels.to("cpu"), 1 - true_labels.to("cpu"))
+    f1 = metric(pred_labels.to("cpu"), true_labels.to("cpu"))
     num_pos = torch.sum(true_labels == 1).cpu()
     print(
         "There are %i test samples, %i positive and %i negative"
@@ -326,11 +355,15 @@ def train(args):
         loss_fn = nn.CrossEntropyLoss()
 
     start_epoch = 0
+    loss_val = 0
     for epoch in range(start_epoch, args.num_epoch):
-        train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches)
+        loss_val = train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches)
         if epoch % 5 == 0:
-            eval_model(attention_model, test_loader, epoch)
-    eval_model(attention_model, test_loader, epoch)
+            eval_model(attention_model, test_loader, epoch, n_batches)
+        if epoch > 0 and epoch % args.save_checkpoint_epoch == 0:
+            save_checkpoint(attention_model, optimizer, epoch, loss_val, args) 
+    
+    eval_model(attention_model, test_loader, epoch, n_batches)
     explain_model(attention_model, test_loader, epoch, output_path="datasets/test_explain.pt")
 
 
