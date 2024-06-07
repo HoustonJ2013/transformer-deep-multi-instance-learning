@@ -1,13 +1,14 @@
 import argparse
+import os
 
 import numpy as np
-import os
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from dataloader import MnstBagsGenerator, NumpyConcurrentGenerator, NumpyDataset, NumpyGenerator
+from dataloader import (MnstBagsGenerator, NumpyConcurrentGenerator,
+                        NumpyDataset, NumpyGenerator)
 from modelMIL import MILAttention
 from torchmetrics.classification import BinaryF1Score
 
@@ -206,13 +207,19 @@ def save_checkpoint(model, optimizer, epoch, loss, args):
     test_folder = os.path.join(args.checkpoint_path, args.test_name)
     if os.path.exists(test_folder) is False:
         os.makedirs(test_folder, exist_ok=True)
-    filename = "checkpoint_%05d.pt"%(epoch)
-    
-    torch.save({"epoch": epoch, 
-                "model_state_dict": model.state_dict(), 
-                "optimizer_state_dict": optimizer.state_dict(),
-                "loss": loss,}, os.path.join(test_folder, filename))
-    return 
+    filename = "checkpoint_%05d.pt" % (epoch)
+
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "loss": loss,
+        },
+        os.path.join(test_folder, filename),
+    )
+    return
+
 
 def load_checkpoint(model, optimizer, args):
     test_folder = os.path.join(args.checkpoint_path, args.test_name)
@@ -220,12 +227,13 @@ def load_checkpoint(model, optimizer, args):
         os.makedirs(test_folder, exist_ok=True)
     filename_lastest = sorted([_ for _ in os.listdir(test_folder)])[-1]
     checkpoint = torch.load(os.path.join(test_folder, filename_lastest))
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    epoch = checkpoint['epoch']
-    loss = checkpoint['loss']
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    epoch = checkpoint["epoch"]
+    loss = checkpoint["loss"]
 
-    return epoch, loss 
+    return epoch, loss
+
 
 def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches, refresh_freq=2):
 
@@ -362,9 +370,7 @@ def train(args):
         )
 
         test_dataset = NumpyDataset(inp_csv=args.mnst_test_inp_csv, max_bag_length=args.test_max_bag_length)
-        test_loader = NumpyGenerator(
-            test_dataset, batch_size=args.batch_size, num_workers=4, shuffle=False
-        )
+        test_loader = NumpyGenerator(test_dataset, batch_size=args.batch_size, num_workers=4, shuffle=False)
         n_batches = len(train_loader)
     else:
         train_loader = NumpyConcurrentGenerator(args.mnst_train_inp_csv, batch_size=args.batch_size, max_threads=1024)
@@ -380,7 +386,7 @@ def train(args):
     else:
         loss_fn = nn.CrossEntropyLoss()
 
-    ## start training 
+    ## start training
     if args.load_from_checkpoint:
         start_epoch, loss_val = load_checkpoint(attention_model, optimizer, args)
     else:
@@ -391,8 +397,8 @@ def train(args):
         if epoch > 0 and epoch % args.eval_frequency == 0:
             eval_model(attention_model, test_loader, epoch, n_batches)
         if epoch > 0 and epoch % args.save_checkpoint_epoch == 0:
-            save_checkpoint(attention_model, optimizer, epoch, loss_val, args) 
-    
+            save_checkpoint(attention_model, optimizer, epoch, loss_val, args)
+
     eval_model(attention_model, test_loader, epoch, n_batches)
     explain_model(attention_model, test_loader, epoch, output_path="datasets/test_explain.pt")
 
