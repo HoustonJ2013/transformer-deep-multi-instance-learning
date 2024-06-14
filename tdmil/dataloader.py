@@ -33,12 +33,14 @@ class MnstBagsGenerator:
         max_bag_length=30,
         mean_bag_length=20,
         target_number=9,
+        target_multiples=1,
         var_bag_length=5,
         num_bag=250,
         seed=1,
     ):
         self.batch_size = batch_size
         self.target_number = target_number
+        self.target_multiples = target_multiples
         self.bag_length_dist = bag_length_dist
         self.max_bag_length = max_bag_length
         self.mean_bag_length = mean_bag_length
@@ -95,8 +97,9 @@ class MnstBagsGenerator:
                 input_tensor[i] = self.embedding[batched_random_indices[i]]
             label_tensor = torch.zeros((self.batch_size), dtype=(torch.float32))
             for i in range(self.batch_size):
-                label_tensor[i] = torch.any(
-                    self.labels[batched_random_indices[i]][: random_bag_lengths[i]] == self.target_number
+                label_tensor[i] = int(
+                    torch.sum(self.labels[batched_random_indices[i]][: random_bag_lengths[i]] == self.target_number)
+                    >= self.target_multiples
                 )
             if return_indices:
                 yield input_tensor, label_tensor, attention_mask, torch.tensor(batched_random_indices)

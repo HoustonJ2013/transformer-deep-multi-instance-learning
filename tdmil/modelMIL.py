@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-MASK_VALUE = -1000
+MASK_VALUE = -10000
 
 
 ## The MILAttention is inspired by https://github.com/AMLab-Amsterdam/AttentionDeepMIL/blob/master/model.py
@@ -163,12 +163,19 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, attention_mask=None):
         B, N, C = x.shape
+        # print(x.shape, attention_mask.shape)
+        if attention_mask is not None:
+            x = x * attention_mask.reshape(B, N, 1).to(torch.float32)
+
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # B x n_head x N x N
+
+        if attention_mask is not None:
+            attn = attn + MASK_VALUE * (1 - attention_mask.reshape(B, 1, 1, N))
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
@@ -202,12 +209,12 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
-    def forward(self, x, return_attention=False):
-        y, attn = self.attn(self.norm1(x))
-        if return_attention:
-            return attn
+    def forward(self, x, return_attention=False, attention_mask=None):
+        y, attn = self.attn(self.norm1(x), attention_mask=attention_mask)
         x = x + self.drop_path(y)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
+        if return_attention:
+            return x, attn
         return x
 
 
@@ -235,7 +242,10 @@ class TransformerMIL(nn.Module):
         self.num_features = self.embed_dim = embed_dim
         # add a learnable class token
         self.max_bag_length = max_bag_length
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        if with_cls_token:
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        else:
+            self.cls_token = None
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         self.blocks = nn.ModuleList(
@@ -258,7 +268,8 @@ class TransformerMIL(nn.Module):
 
         # Classifier head
         self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-        trunc_normal_(self.cls_token, std=0.02)
+        if self.cls_token is not None:
+            trunc_normal_(self.cls_token, std=0.02)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -270,35 +281,58 @@ class TransformerMIL(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def prepare_tokens(self, x):
+    def prepare_tokens(self, x, attention_mask=None):
         B, nc, emb_size = x.shape
+        if self.cls_token is None:
+            return x, attention_mask
+
         # add the [CLS] token to the embed patch tokens
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
-        return x
+        if attention_mask is not None:
+            cls_mask = torch.ones((B), dtype=(torch.float32), device=x.device).reshape(B, -1)
+            # print(cls_mask.shape, attention_mask.shape)
+            attention_mask = torch.cat((cls_mask, attention_mask), dim=1)
+        return x, attention_mask
 
-    def forward(self, x):
-        x = self.prepare_tokens(x)
-        for blk in self.blocks:
-            x = blk(x)
+    def forward(
+        self,
+        x,
+        attention_mask=None,
+        return_logits=True,
+        return_attention=False,
+    ):
+
+        results = {}
+        x, attention_mask = self.prepare_tokens(x, attention_mask)
+        for i, blk in enumerate(self.blocks):
+            if i == len(self.blocks) - 1 and return_attention:
+                x, attn = blk(x, attention_mask=attention_mask, return_attention=True)
+                results["attention"] = attn
+            else:
+                x = blk(x, attention_mask=attention_mask)
         x = self.norm(x)
-        return x[:, 0]
+        x = self.head(x[:, 0])  # x[:, 0] the class token embedding
+        if return_logits:
+            results["logits"] = x
+        return results
 
-    def get_last_selfattention(self, x):
-        x = self.prepare_tokens(x)
+    def get_last_selfattention(self, x, attention_mask=None, prepare_token=True):
+        if prepare_token:
+            x, attention_mask = self.prepare_tokens(x, attention_mask)
         for i, blk in enumerate(self.blocks):
             if i < len(self.blocks) - 1:
-                x = blk(x)
+                x = blk(x, attention_mask=attention_mask)
             else:
                 # return attention of the last block
-                return blk(x, return_attention=True)
+                return blk(x, return_attention=True, attention_mask=attention_mask)
 
-    def get_intermediate_layers(self, x, n=1):
-        x = self.prepare_tokens(x)
+    def get_intermediate_layers(self, x, n=1, attention_mask=None):
+        x, attention_mask = self.prepare_tokens(x, attention_mask)
         # we return the output tokens from the `n` last blocks
         output = []
         for i, blk in enumerate(self.blocks):
-            x = blk(x)
+            x = blk(x, attention_mask=attention_mask)
             if len(self.blocks) - i <= n:
                 output.append(self.norm(x))
         return output
@@ -313,3 +347,11 @@ if __name__ == "__main__":
     for i_, l_ in enumerate(random_bag_lengths):
         attention_mask[i_, :l_] = 1
     model_output = model(inputs, attention_mask, return_attention=True, return_feature=True)
+
+    transformer = TransformerMIL()
+    inputs = torch.randn((16, 50, 384), dtype=(torch.float32))
+    random_bag_lengths = np.clip(np.random.normal(10, 2, size=(16)).astype(int), 1, 50)
+    attention_mask = torch.zeros((16, 50), dtype=(torch.float32))
+    for i_, l_ in enumerate(random_bag_lengths):
+        attention_mask[i_, :l_] = 1
+    transformer_output = transformer(inputs, attention_mask)

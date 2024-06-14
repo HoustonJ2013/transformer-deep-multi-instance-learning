@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 
 import numpy as np
@@ -9,8 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from dataloader import (MnstBagsGenerator, NumpyConcurrentGenerator,
                         NumpyDataset, NumpyGenerator)
-from modelMIL import MILAttention
+from modelMIL import MILAttention, TransformerMIL
 from torchmetrics.classification import BinaryF1Score
+from utils import load_config, save_config, save_log
 
 
 def get_args_parser():
@@ -59,11 +61,16 @@ def get_args_parser():
         "--config_file",
         nargs="?",
         type=str,
-        help="the configure file to rerun the test",
+        help="the configure file for the test",
     )
 
     # parameter for data
-
+    parser.add_argument(
+        "--emb_size",
+        default=384,
+        type=int,
+        help="""embedding size""",
+    )
     parser.add_argument(
         "--loader_type",
         default="MnstBagsGenerator",
@@ -123,6 +130,19 @@ def get_args_parser():
         help="""num of bags in the training set""",
     )
     parser.add_argument(
+        "--mnst_target",
+        default=9,
+        type=int,
+        help="""the target number for the mnst classifier""",
+    )
+    parser.add_argument(
+        "--mnst_target_multiples",
+        default=1,
+        type=int,
+        help="""the min number of target numbers show up in the bag to consider as bag as 1""",
+    )
+
+    parser.add_argument(
         "--test_max_bag_length",
         default=40,
         type=int,
@@ -146,24 +166,32 @@ def get_args_parser():
         type=int,
         help="""num of bags in the training set""",
     )
-    parser.add_argument(
-        "--mnst_load_to_gpu",
-        action="store_false",
-        help="Directly load MNST data to GPU and sample from there",
-    )
-
     # Parameter for MIL attention
     parser.add_argument(
-        "--middle_dim",
+        "--mil_middle_dim",
         default=128,
         type=int,
         help="""The second dimension of V in the attention layer""",
     )
     parser.add_argument(
-        "--attention_branches",
+        "--mil_attention_branches",
         default=1,
         type=int,
         help="""The second dimension of W in the attention layer""",
+    )
+
+    parser.add_argument(
+        "--transformer_depth",
+        default=1,
+        type=int,
+        help="""depth of the transformer""",
+    )
+
+    parser.add_argument(
+        "--transformer_num_heads",
+        default=12,
+        type=int,
+        help="""number of transformer heads""",
     )
 
     # Basic training parameters
@@ -183,7 +211,7 @@ def get_args_parser():
     parser.add_argument(
         "--lr",
         type=float,
-        default=1e-4,
+        default=0.001,
         help="""learning rate""",
     )
     parser.add_argument(
@@ -225,7 +253,10 @@ def load_checkpoint(model, optimizer, args):
     test_folder = os.path.join(args.checkpoint_path, args.test_name)
     if os.path.exists(test_folder) is False:
         os.makedirs(test_folder, exist_ok=True)
-    filename_lastest = sorted([_ for _ in os.listdir(test_folder)])[-1]
+    all_files = [_ for _ in os.listdir(test_folder) if "checkpoint" in _]
+    if len(all_files) == 0:
+        return 0, 0
+    filename_lastest = sorted(all_files)[-1]
     checkpoint = torch.load(os.path.join(test_folder, filename_lastest))
     model.load_state_dict(checkpoint["model_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -256,12 +287,14 @@ def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_
         optimizer.step()
         loss_values.append(loss.item())
     print("loss at epoch %i is %f" % (epoch, np.mean(loss_values)))
-    return np.mean(loss_values)
+    train_metrics = {"loss": np.mean(loss_values)}
+    return train_metrics
 
 
-def eval_model(attention_model, test_loader, epoch, n_batches):
+def eval_model(attention_model, test_loader, loss_fn, epoch, n_batches):
     true_labels = []
     pred_labels = []
+    loss_values = []
     refresh_freq = max([1, int(n_batches * 0.01)])
     for batch_i, (inp_, label_, mask_) in enumerate(test_loader.dataloader()):
         if batch_i % refresh_freq == 0:
@@ -274,6 +307,8 @@ def eval_model(attention_model, test_loader, epoch, n_batches):
         with torch.no_grad():
             forward_result = attention_model(inp_, mask_)
             logits = forward_result["logits"].squeeze(-1)
+            loss = loss_fn(logits, label_)
+            loss_values.append(loss.item())
             y_prob = nn.Sigmoid()(logits)
             y_pred = torch.ge(y_prob, 0.5).float()
             pred_labels.append(y_pred)
@@ -294,9 +329,19 @@ def eval_model(attention_model, test_loader, epoch, n_batches):
             f1.float().data.item(),
         )
     )
+    eval_metrics = {
+        "loss": np.mean(loss_values),
+        "accuracy": pred_labels.eq(true_labels).cpu().float().mean().data.item(),
+        "f1": f1.float().data.item(),
+    }
+    return eval_metrics
 
 
-def explain_model(attention_model, test_loader, epoch, output_path="datasets/test_explain.pt"):
+def explain_mnst_model(attention_model, test_loader, epoch, args):
+    test_folder = os.path.join(args.checkpoint_path, args.test_name)
+    if os.path.exists(test_folder) is False:
+        os.makedirs(test_folder, exist_ok=True)
+    output_path = os.path.join(test_folder, "test_explain.pt")
     true_labels = []
     pred_labels = []
     batch_indices = []
@@ -341,26 +386,26 @@ def train(args):
             embedding_tensor_path=args.mnst_train_inp_path,
             label_tensor_path=args.mnst_train_label_path,
             batch_size=args.batch_size,
-            target_number=9,
+            target_number=args.mnst_target,
             bag_length_dist=args.mnst_bag_length_dist,
             max_bag_length=args.max_bag_length,
             mean_bag_length=args.mnst_mean_bag_length,
             var_bag_length=args.mnst_var_bag_length,
             num_bag=args.num_bags_train,
-            load_to_gpu=args.mnst_load_to_gpu,
+            target_multiples=args.mnst_target_multiples,
         )
 
         test_loader = MnstBagsGenerator(
             embedding_tensor_path=args.mnst_test_inp_path,
             label_tensor_path=args.mnst_test_label_path,
             batch_size=64,
-            target_number=9,
+            target_number=args.mnst_target,
             bag_length_dist="normal",
-            max_bag_length=25,
-            mean_bag_length=12,
-            var_bag_length=5,
+            max_bag_length=args.max_bag_length,
+            mean_bag_length=args.mnst_mean_bag_length,
+            var_bag_length=args.mnst_var_bag_length,
             num_bag=500,
-            load_to_gpu=args.mnst_load_to_gpu,
+            target_multiples=args.mnst_target_multiples,
         )
         n_batches = len(train_loader)
     elif args.loader_type == "NumpyGenerator":
@@ -377,9 +422,24 @@ def train(args):
         test_loader = NumpyConcurrentGenerator(args.mnst_test_inp_csv, batch_size=args.batch_size, max_threads=1024)
         n_batches = (len(train_loader) + args.batch_size - 1) // (args.batch_size)
     ## define model, optimizer and loss
-    attention_model = MILAttention()
+    if args.arch == "MILAttention":
+        attention_model = MILAttention(
+            embedding_size=args.emb_size, middle_dim=args.mil_middle_dim, attention_branches=args.mil_attention_branches
+        )
+    elif args.arch == "transformer":
+        attention_model = TransformerMIL(
+            embed_dim=args.emb_size,
+            depth=args.transformer_depth,
+            num_heads=args.transformer_num_heads,
+        )
+    else:
+        attention_model = MILAttention(
+            embedding_size=args.emb_size, middle_dim=args.mil_middle_dim, attention_branches=args.mil_attention_branches
+        )
+
     if args.gpu:
         attention_model = attention_model.to("cuda")
+
     optimizer = torch.optim.Adam(attention_model.parameters(), lr=args.lr)
     if args.loss == "BCEWithLogitsLoss":
         loss_fn = nn.BCEWithLogitsLoss()
@@ -389,22 +449,44 @@ def train(args):
     ## start training
     if args.load_from_checkpoint:
         start_epoch, loss_val = load_checkpoint(attention_model, optimizer, args)
+        epoch = start_epoch
     else:
         start_epoch = 0
+        epoch = start_epoch
         loss_val = 0
     for epoch in range(start_epoch, args.num_epoch):
-        loss_val = train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches)
+        loss_val = train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches)["loss"]
+        eval_loss = None
+        eval_acc = None
+        eval_f1 = None
         if epoch > 0 and epoch % args.eval_frequency == 0:
-            eval_model(attention_model, test_loader, epoch, n_batches)
-        if epoch > 0 and epoch % args.save_checkpoint_epoch == 0:
-            save_checkpoint(attention_model, optimizer, epoch, loss_val, args)
+            eval_metrics = eval_model(attention_model, test_loader, loss_fn, epoch, n_batches)
+            eval_loss = eval_metrics["loss"]
+            eval_acc = eval_metrics["accuracy"]
+            eval_f1 = eval_metrics["f1"]
+        if (epoch + 1) % args.save_checkpoint_epoch == 0:
+            save_checkpoint(attention_model, optimizer, epoch + 1, loss_val, args)
 
-    eval_model(attention_model, test_loader, epoch, n_batches)
-    explain_model(attention_model, test_loader, epoch, output_path="datasets/test_explain.pt")
+        log_stats = {
+            "epoch": epoch,
+            "train_loss": loss_val,
+            "eval_loss": eval_loss,
+            "eval_acc": eval_acc,
+            "eval_f1": eval_f1,
+        }
+        save_log(log_stats, args)
+
+    save_checkpoint(attention_model, optimizer, epoch + 1, loss_val, args)
+    eval_metrics = eval_model(attention_model, test_loader, loss_fn, epoch, n_batches)
+    if args.loader_type == "MnstBagsGenerator":
+        explain_mnst_model(attention_model, test_loader, epoch, args)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("tdmil", parents=[get_args_parser()])
     args = parser.parse_args()
+    if args.config_file is not None:
+        load_config(args, args.config_file)
+    save_config(args)
     print(args)
     train(args)
