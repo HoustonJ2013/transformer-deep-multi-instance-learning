@@ -13,8 +13,7 @@
 
 """
 
-from concurrent.futures import (ALL_COMPLETED, ThreadPoolExecutor,
-                                as_completed, wait)
+from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from time import time
 
 import numpy as np
@@ -86,21 +85,14 @@ class MnstBagsGenerator:
                     1,
                     self.max_bag_length,
                 )
-            attention_mask = torch.zeros((self.batch_size, self.max_bag_length), dtype=(torch.float32))
-            for i, l_ in enumerate(random_bag_lengths):
-                attention_mask[i, :l_] = 1
-            input_tensor = torch.zeros(
-                (self.batch_size, self.max_bag_length, self.embedding_size),
-                dtype=(torch.float32),
+            attention_mask = torch.tensor(
+                [[1] * l + [0] * (self.max_bag_length - l) for l in random_bag_lengths], dtype=(torch.float32)
             )
-            for i in range(self.batch_size):
-                input_tensor[i] = self.embedding[batched_random_indices[i]]
-            label_tensor = torch.zeros((self.batch_size), dtype=(torch.float32))
-            for i in range(self.batch_size):
-                label_tensor[i] = int(
-                    torch.sum(self.labels[batched_random_indices[i]][: random_bag_lengths[i]] == self.target_number)
-                    >= self.target_multiples
-                )
+            input_tensor = self.embedding[batched_random_indices]
+            label_tensor = (
+                torch.sum((self.labels[batched_random_indices] == self.target_number) * attention_mask, axis=1)
+                >= self.target_multiples
+            ).to(torch.float32)
             if return_indices:
                 yield input_tensor, label_tensor, attention_mask, torch.tensor(batched_random_indices)
             else:
