@@ -13,7 +13,6 @@
 
 """
 
-from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from time import time
 
 import numpy as np
@@ -129,7 +128,7 @@ class NumpyDataset:
                 attention_mask[bag_length:] = 0
             else:
                 np_array = np_array[: self.max_bag_length, :]
-            return torch.tensor(np_array), torch.tensor(label, dtype=torch.float32), attention_mask
+            return torch.tensor(np_array, dtype=torch.float32), torch.tensor(label, dtype=torch.float32), attention_mask
         except:
             return None, None, None
 
@@ -165,7 +164,12 @@ if __name__ == "__main__":
     t1 = time()
     dataset = NumpyDataset(inp_csv="datasets/mnst_small.csv")
     train_loader2 = NumpyGenerator(
-        dataset, batch_size=128, num_workers=4, pin_memory=True, shuffle=True, drop_last=True
+        dataset, 
+        batch_size=128, 
+        num_workers=4, 
+        pin_memory=True, 
+        shuffle=True, 
+        drop_last=True
     )
     for batch_i, (inp_, label_, mask_) in enumerate(train_loader2.dataloader()):
         assert len(label_) == len(inp_), "label and input tensor should have the same batch size"

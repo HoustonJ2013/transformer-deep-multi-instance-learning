@@ -299,6 +299,7 @@ class TransformerMIL(nn.Module):
         self,
         x,
         attention_mask=None,
+        return_cls_token=False,
         return_logits=True,
         return_attention=False,
     ):
@@ -312,7 +313,10 @@ class TransformerMIL(nn.Module):
             else:
                 x = blk(x, attention_mask=attention_mask)
         x = self.norm(x)
-        x = self.head(x[:, 0])  # x[:, 0] the class token embedding
+        cls_token = x[:, 0] # x[:, 0] the class token embedding
+        if return_cls_token:
+            results["cls_token"] = cls_token
+        x = self.head(cls_token)  
         if return_logits:
             results["logits"] = x
         return results

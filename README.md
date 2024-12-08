@@ -1,7 +1,9 @@
 # transformer-deep-multi-instance-learning
 
 ## Motivation
-Many real world use cases fall into the category of multi-instance learnings, such as medical image analysis, insurance claim photo analysis. In those use cases, the user may have multiple images taken/uploaded as input, and one final single decision as output. For examples, a customer who filed a accident claims usually upload many images, including the shot of the car, insurance policy, ids and other documents, to the insurance server as evidence, and the insurance decision are made based on one or more of those images. The instances can be in different modalities, such as videos, audios, images, and even strctured data. 
+Many real world ML use cases fall into the category of multi-instance learnings, such as medical image analysis, insurance claim photo analysis. In those use cases, the user may have variable number of images taken/uploaded as input, and the machine learning target is one final single decision. This single decision can be the output of a machine learning model, or it can be a feature input to another larger system. For examples, a customer who filed a accident claims usually upload many images, including the shot of the car, insurance policy, ids and other documents, to the insurance server as evidence, and the insurance decision is a single output and should be made based on a few key images out of all the uploaded images. An attention-based mechanisim serves as a potenital solution to aggregate the information from variable input instances. 
+
+
 
 The transfomer-based foudational models make it easy to have comprehensive representation of the instances, such [DINO v2](https://arxiv.org/abs/2304.07193) for image embedding, [Bert/Roberta](https://arxiv.org/abs/1907.11692) for text embedding. Inspired by the work [Attention-based deep multiple instance learning](https://arxiv.org/pdf/1802.04712), we explore transformer architecture as a way to map the multiple instances into one embedding (CLS token embedding) and provide an easy to use code for experiments. 
 
@@ -10,7 +12,7 @@ With precomputed embedding as input, those mult-instance architectures can be bu
 
 ## Input data
 
-The image/text data should be encoded by a foundation model before feeding into the MIL model. We use MNST data for our development test and the open source DINO v2 model as our image encoder. A [notebook](notebooks/Minst_data.ipynb) is used to download the MNST data, and the hugging face transformers package was used to encode and save the embedding. MNST data is the handwrite images for numbers from 0 to 9 and the corresponding labels. The multi-instance learning data are organized in bags, in each bag there are a variable number of instances, and only one label for each bag. To simulate this kind of data, we randomly (uniform) drop a random number of images (poisson) from MNST training set, put them in a bag. If there are m numbers of images with labels equal to the target number, then the bag is labeled as one, and vice versa. For example, if we set m to be 1 and target number to be 9, when there is at least one image with label 9 in the randomly generated bag, then the bag is labeled as 1. For this tak, we provided a MnstBagsGenerator (in tdmil/dataloader.py). 
+The image/text data should be encoded by a foundation model before feeding into the MIL model. We use MNST data for our development test and the open source DINO v2 model as our image encoder. A [notebook](notebooks/Minst_data.ipynb) is used to download the MNST data, and the hugging face transformers package was used to encode and save the embedding. MNST data is the handwrite images for numbers from 0 to 9 and the corresponding labels. The multi-instance learning data are organized in bags, in each bag there are a variable number of instances, and only one label for each bag. To simulate this kind of data, we randomly (uniform) drop a random number of images (poisson) from MNST training set, put them in a bag. As a toy task, if there are m numbers of images with labels equal to the target number, then the bag is labeled as one, and vice versa. For example, if we set m to be 1 and target number to be 9, when there is at least one image with label 9 in the randomly generated bag, then the bag is labeled as 1. For this tak, we provided a MnstBagsGenerator (in tdmil/dataloader.py). 
 
 
 For the real data, you can put the image embeddings on the disk, and provide a csv file to our data loader in the following format. The first column is the path to the file for the embeddings for each bag, the second column is the length of the bag, and the third column is the label. The NumpyGenerator (in tdmil/dataloader.py) is provided to handle this format. Check the train script (tdmil/train.py) for the useage of these dataloaders. 
@@ -43,7 +45,8 @@ python3 tdmil/train.py --config_file config/mnst_transformer_complexTarget.json
 
 For the simple task, such as given a variable number of images, determine if there is at least one image with number 9. The simple MILAttention attention can achived a decent f1 score of 0.97, and the interpretation of the attention score is very intuitive. As in the following figure, when the model predict the label is true, the attention score on the images with number 9 is more than other images. 
 
-<img src="image.png" alt="drawing" width="800"/>
+<img src="assets/image.png" alt="drawing" width="800"/>
+
 
 However, for more complex task, such as prediction if there are at least 4 images with number 9 in the bag, the performance of MILAttention drops from f1 of 0.97 to f1 of 0.70. But for the transformer-based attention, the f1 score can be boosted to 0.90. That is more or less expected as the transformer model is more complex with more parameters and can fit into the more complex task. But the intuitive interpretation of the attention weight is lost in the complexity. 
 

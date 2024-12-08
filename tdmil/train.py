@@ -8,15 +8,18 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from dataloader import (MnstBagsGenerator, NumpyConcurrentGenerator,
+from dataloader import (MnstBagsGenerator,
                         NumpyDataset, NumpyGenerator)
 from modelMIL import MILAttention, TransformerMIL
 from torchmetrics.classification import BinaryF1Score
 from utils import load_config, save_config, save_log
 
 
+torch.multiprocessing.set_sharing_strategy('file_descriptor')
+cudnn.benchmark = True
+
 def get_args_parser():
-    parser = argparse.ArgumentParser("DINO", add_help=False)
+    parser = argparse.ArgumentParser("tdmil", add_help=False)
 
     # Model parameters
     parser.add_argument(
@@ -51,12 +54,17 @@ def get_args_parser():
         type=int,
         help="""run evaluation for every n step""",
     )
+    
     parser.add_argument(
         "--load_from_checkpoint",
         action="store_false",
         help="Continue training from the existing checkpoint from the checkpoint folder",
     )
-
+    parser.add_argument(
+        "--binary_classification",
+        action="store_false",
+        help="If the task is binary_classification",
+    )
     parser.add_argument(
         "--config_file",
         nargs="?",
@@ -75,17 +83,30 @@ def get_args_parser():
         "--loader_type",
         default="MnstBagsGenerator",
         type=str,
-        choices=["MnstBagsGenerator", "NumpyGenerator", "NumpyConcurrentGenerator"],
+        choices=["MnstBagsGenerator", "NumpyGenerator"],
         help="""the type of dataloader""",
     )
     parser.add_argument(
         "--mnst_train_inp_csv",
         default="datasets/mnst_train.csv",
         type=str,
-        help="""The path to the csv contain train data""",
+        help="""The path to the csv contain mnst train data""",
     )
     parser.add_argument(
         "--mnst_test_inp_csv",
+        default="datasets/mnst_test.csv",
+        type=str,
+        help="""The path to the csv contain mnst test data""",
+    )
+
+    parser.add_argument(
+        "--train_inp_csv",
+        default="datasets/mnst_train.csv",
+        type=str,
+        help="""The path to the csv contain train data""",
+    )
+    parser.add_argument(
+        "--test_inp_csv",
         default="datasets/mnst_test.csv",
         type=str,
         help="""The path to the csv contain test data""",
@@ -218,7 +239,7 @@ def get_args_parser():
         "--loss",
         default="BCEWithLogitsLoss",
         type=str,
-        choices=["BCEWithLogitsLoss", "CrossEntropy"],
+        choices=["BCEWithLogitsLoss", "CrossEntropy", "MAE", "MSE"],
         help="""The name of the loss""",
     )
     parser.add_argument(
@@ -266,7 +287,7 @@ def load_checkpoint(model, optimizer, args):
     return epoch, loss
 
 
-def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches, refresh_freq=2):
+def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches, args, refresh_freq=2):
 
     loss_values = []
     ## When the attention_model is light weighted, most of the time is on I/O, copying the data
@@ -274,7 +295,7 @@ def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_
     refresh_freq = max([1, int(n_batches * 0.01)])
     for batch_i, (inp_, label_, mask_) in enumerate(train_loader.dataloader(random_seed=epoch)):
         if batch_i % refresh_freq == 0:
-            print("step %i/%i at epoch %i \r" % (batch_i, n_batches, epoch), end="", flush=True)
+            print(f"step {batch_i}/{n_batches} at epoch {epoch} with loss {np.mean(loss_values):0.2e} \r", end="", flush=True)
         if args.gpu:
             inp_ = inp_.cuda(non_blocking=True)
             label_ = label_.cuda(non_blocking=True)
@@ -286,12 +307,13 @@ def train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_
         loss.backward()
         optimizer.step()
         loss_values.append(loss.item())
-    print("loss at epoch %i is %f" % (epoch, np.mean(loss_values)))
+    print()
+    print(f"Train loss at epoch {epoch} is {np.mean(loss_values):0.2e}")
     train_metrics = {"loss": np.mean(loss_values)}
     return train_metrics
 
 
-def eval_model(attention_model, test_loader, loss_fn, epoch, n_batches):
+def eval_model(attention_model, test_loader, loss_fn, epoch, n_batches, args, binary_classification=True):
     true_labels = []
     pred_labels = []
     loss_values = []
@@ -309,30 +331,33 @@ def eval_model(attention_model, test_loader, loss_fn, epoch, n_batches):
             logits = forward_result["logits"].squeeze(-1)
             loss = loss_fn(logits, label_)
             loss_values.append(loss.item())
-            y_prob = nn.Sigmoid()(logits)
-            y_pred = torch.ge(y_prob, 0.5).float()
-            pred_labels.append(y_pred)
-    true_labels = torch.concat(true_labels)
-    pred_labels = torch.concat(pred_labels)
-    metric = BinaryF1Score()
-    f1 = metric(pred_labels.to("cpu"), true_labels.to("cpu"))
-    num_pos = torch.sum(true_labels == 1).cpu()
-    print(
-        "There are %i test samples, %i positive and %i negative"
-        % (len(true_labels), num_pos, len(true_labels) - num_pos)
-    )
-    print(
-        "At epoch %i the accuracy is %f and f1 is %f"
-        % (
-            epoch,
-            pred_labels.eq(true_labels).cpu().float().mean().data.item(),
-            f1.float().data.item(),
+            if binary_classification:
+                y_prob = nn.Sigmoid()(logits)
+                y_pred = torch.ge(y_prob, 0.5).float()
+                pred_labels.append(y_pred)
+    if binary_classification:
+        true_labels = torch.concat(true_labels)
+        pred_labels = torch.concat(pred_labels)
+        metric = BinaryF1Score()
+        f1 = metric(pred_labels.to("cpu"), true_labels.to("cpu"))
+        num_pos = torch.sum(true_labels == 1).cpu()
+        print(
+            "There are %i test samples, %i positive and %i negative"
+            % (len(true_labels), num_pos, len(true_labels) - num_pos)
         )
-    )
+        print(
+            "At epoch %i the accuracy is %f and f1 is %f"
+            % (
+                epoch,
+                pred_labels.eq(true_labels).cpu().float().mean().data.item(),
+                f1.float().data.item(),
+            )
+        )
+    else: 
+        print("eval loss at epoch %i is %0.2e" % (epoch, np.mean(loss_values)))
+              
     eval_metrics = {
         "loss": np.mean(loss_values),
-        "accuracy": pred_labels.eq(true_labels).cpu().float().mean().data.item(),
-        "f1": f1.float().data.item(),
     }
     return eval_metrics
 
@@ -409,18 +434,25 @@ def train(args):
         )
         n_batches = len(train_loader)
     elif args.loader_type == "NumpyGenerator":
-        train_dataset = NumpyDataset(inp_csv=args.mnst_train_inp_csv, max_bag_length=args.max_bag_length)
+        train_dataset = NumpyDataset(inp_csv=args.train_inp_csv, max_bag_length=args.max_bag_length)
         train_loader = NumpyGenerator(
-            train_dataset, batch_size=args.batch_size, num_workers=4, pin_memory=True, shuffle=True, drop_last=True
+            train_dataset, 
+            batch_size=args.batch_size, 
+            num_workers=4, 
+            pin_memory=True, 
+            shuffle=True, 
+            drop_last=True
         )
-
-        test_dataset = NumpyDataset(inp_csv=args.mnst_test_inp_csv, max_bag_length=args.test_max_bag_length)
-        test_loader = NumpyGenerator(test_dataset, batch_size=args.batch_size, num_workers=4, shuffle=False)
+        test_dataset = NumpyDataset(inp_csv=args.test_inp_csv, 
+                                    max_bag_length=args.test_max_bag_length)
+        test_loader = NumpyGenerator(test_dataset, 
+                                     batch_size=args.batch_size, 
+                                     num_workers=4, 
+                                     shuffle=False)
         n_batches = len(train_loader)
     else:
-        train_loader = NumpyConcurrentGenerator(args.mnst_train_inp_csv, batch_size=args.batch_size, max_threads=1024)
-        test_loader = NumpyConcurrentGenerator(args.mnst_test_inp_csv, batch_size=args.batch_size, max_threads=1024)
-        n_batches = (len(train_loader) + args.batch_size - 1) // (args.batch_size)
+        raise ValueError("The loader type is not supported")
+    
     ## define model, optimizer and loss
     if args.arch == "MILAttention":
         attention_model = MILAttention(
@@ -441,11 +473,18 @@ def train(args):
         attention_model = attention_model.to("cuda")
 
     optimizer = torch.optim.Adam(attention_model.parameters(), lr=args.lr)
+
     if args.loss == "BCEWithLogitsLoss":
         loss_fn = nn.BCEWithLogitsLoss()
-    else:
+    elif args.loss == "CrossEntropy":
         loss_fn = nn.CrossEntropyLoss()
-
+    elif args.loss == "MAE":
+        loss_fn = nn.L1Loss()
+    elif args.loss == "MSE":
+        loss_fn = nn.MSELoss()
+    else:
+        raise ValueError("The loss function is not supported")
+    
     ## start training
     if args.load_from_checkpoint:
         start_epoch, loss_val = load_checkpoint(attention_model, optimizer, args)
@@ -454,16 +493,19 @@ def train(args):
         start_epoch = 0
         epoch = start_epoch
         loss_val = 0
+    
     for epoch in range(start_epoch, args.num_epoch):
-        loss_val = train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches)["loss"]
+        loss_val = train_one_epoch(attention_model, optimizer, train_loader, loss_fn, epoch, n_batches, args)["loss"]
         eval_loss = None
-        eval_acc = None
-        eval_f1 = None
-        if epoch > 0 and epoch % args.eval_frequency == 0:
-            eval_metrics = eval_model(attention_model, test_loader, loss_fn, epoch, n_batches)
+        if epoch % args.eval_frequency == 0:
+            eval_metrics = eval_model(attention_model, 
+                                          test_loader, 
+                                          loss_fn, 
+                                          epoch, 
+                                          n_batches, 
+                                          args,
+                                          binary_classification=args.binary_classification)
             eval_loss = eval_metrics["loss"]
-            eval_acc = eval_metrics["accuracy"]
-            eval_f1 = eval_metrics["f1"]
         if (epoch + 1) % args.save_checkpoint_epoch == 0:
             save_checkpoint(attention_model, optimizer, epoch + 1, loss_val, args)
 
@@ -471,13 +513,17 @@ def train(args):
             "epoch": epoch,
             "train_loss": loss_val,
             "eval_loss": eval_loss,
-            "eval_acc": eval_acc,
-            "eval_f1": eval_f1,
         }
         save_log(log_stats, args)
 
     save_checkpoint(attention_model, optimizer, epoch + 1, loss_val, args)
-    eval_metrics = eval_model(attention_model, test_loader, loss_fn, epoch, n_batches)
+    eval_metrics = eval_model(attention_model, 
+                              test_loader, 
+                              loss_fn, 
+                              epoch, 
+                              n_batches, 
+                              args, 
+                              binary_classification=args.binary_classification)
     if args.loader_type == "MnstBagsGenerator":
         explain_mnst_model(attention_model, test_loader, epoch, args)
 
