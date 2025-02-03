@@ -1,11 +1,13 @@
 {
   "arch": "transformer",
   "transformer_depth": 8,
-  "transformer_num_heads": 12,
+  "transformer_num_heads": 16,
   "test_name": "property_img_transformer_numpygenerator_t2",
   "checkpoint_path": "model_weights/",
   "save_checkpoint_epoch": 20,
-  "eval_frequency": 1,
+  "train_num_workers": 4,
+  "test_num_workers": 2,
+  "eval_frequency": 4,
   "load_from_checkpoint": true,
   "binary_classification": false,
   "config_file": null,
@@ -27,9 +29,9 @@
   "middle_dim": 128,
   "attention_branches": 1,
   "gpu": true,
-  "batch_size": 64,
+  "batch_size": 96,
   "num_epoch": 100,
-  "lr": 0.002,
+  "lr": 0.005,
   "loss": "MAE",
   "optimizer": "Adam"
 }

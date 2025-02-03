@@ -48,6 +48,20 @@ def get_args_parser():
         type=int,
         help="""save checkpoint for every n step""",
     )
+
+    parser.add_argument(
+        "--train_num_workers",
+        default=4,
+        type=int,
+        help="""The number of workers for the train dataloader""",
+    )
+    parser.add_argument(
+        "--test_num_workers",
+        default=4,
+        type=int,
+        help="""The number of workers for the test dataloader""",
+    )
+
     parser.add_argument(
         "--eval_frequency",
         default=4,
@@ -438,7 +452,7 @@ def train(args):
         train_loader = NumpyGenerator(
             train_dataset, 
             batch_size=args.batch_size, 
-            num_workers=4, 
+            num_workers=args.train_num_workers, 
             pin_memory=True, 
             shuffle=True, 
             drop_last=True
@@ -447,7 +461,7 @@ def train(args):
                                     max_bag_length=args.test_max_bag_length)
         test_loader = NumpyGenerator(test_dataset, 
                                      batch_size=args.batch_size, 
-                                     num_workers=4, 
+                                     num_workers=args.test_num_workers, 
                                      shuffle=False)
         n_batches = len(train_loader)
     else:

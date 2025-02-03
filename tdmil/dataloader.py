@@ -100,37 +100,44 @@ class MnstBagsGenerator:
 
 class NumpyDataset:
     def __init__(
-        self, inp_csv, array_path_col="array_path", target_col="target", bag_length_col="bag_length", max_bag_length=40
+        self, inp_csv, 
+        array_path_col="array_path", 
+        target_col="target", 
+        bag_length_col="bag_length", 
+        max_bag_length=40, 
     ):
         self.df = pd.read_csv(inp_csv).reset_index(drop=True)
         self.array_path_col = array_path_col
         self.target_col = target_col
         self.bag_length_col = bag_length_col
         self.max_bag_length = max_bag_length
+        device="cpu"
+        self.device = device
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, index):
         try:
-            np_path = self.df.loc[index, self.array_path_col]
+            array_path = self.df.loc[index, self.array_path_col]
             label = self.df.loc[index, self.target_col]
-            np_array = np.load(np_path)
+            np_array = np.load(array_path)
             bag_length = len(np_array)
             indices = np.arange(bag_length)
             np.random.shuffle(indices)
             np_array = np_array[indices]
-            attention_mask = torch.ones((self.max_bag_length), dtype=(torch.float32))
+            attention_mask = torch.ones((self.max_bag_length), dtype=torch.float32, device=self.device)
+            inp_torch_array = torch.zeros((self.max_bag_length, 384), dtype=torch.float32, device=self.device)
             if bag_length < self.max_bag_length:
-                np_array = np.pad(
-                    np_array, ((0, self.max_bag_length - bag_length), (0, 0)), "constant", constant_values=(0, 0)
-                )
+                inp_torch_array[:bag_length, :] = torch.tensor(np_array, device=self.device)
                 attention_mask[bag_length:] = 0
             else:
-                np_array = np_array[: self.max_bag_length, :]
-            return torch.tensor(np_array, dtype=torch.float32), torch.tensor(label, dtype=torch.float32), attention_mask
+                inp_torch_array[: self.max_bag_length, :] = torch.tensor(np_array[: self.max_bag_length, :], device=self.device)
+            return inp_torch_array, torch.tensor(label, dtype=torch.float32, device=self.device), attention_mask
         except:
-            return None, None, None
+            inp_torch_array = torch.zeros((self.max_bag_length, 384), dtype=torch.float32, device=self.device)
+            attention_mask = torch.ones((self.max_bag_length), dtype=(torch.float32), device=self.device)
+            return inp_torch_array, torch.tensor(label, dtype=torch.float32, device=self.device), attention_mask
 
 
 class NumpyGenerator:
@@ -162,11 +169,12 @@ if __name__ == "__main__":
     print("MnstBagsGenerator takes %0.2f secs to generate %i samples" % (time() - t0, 64 * 250))
 
     t1 = time()
-    dataset = NumpyDataset(inp_csv="datasets/mnst_small.csv")
+    dataset = NumpyDataset(inp_csv="datasets/mnst_small.csv", 
+                           max_bag_length=45)
     train_loader2 = NumpyGenerator(
         dataset, 
         batch_size=128, 
-        num_workers=4, 
+        num_workers=3, 
         pin_memory=True, 
         shuffle=True, 
         drop_last=True
@@ -177,3 +185,21 @@ if __name__ == "__main__":
     t2 = time()
     print("NumpyGenerator takes %0.3f secs to generate %i samples" % (t2 - t1, len(dataset)))
 
+
+    # t1 = time()
+    # dataset = NumpyDataset(inp_csv="datasets/mnst_small.csv", 
+    #                        max_bag_length=45, 
+    #                        device="cuda:0")
+    # train_loader2 = NumpyGenerator(
+    #     dataset, 
+    #     batch_size=128, 
+    #     num_workers=1, 
+    #     # pin_memory=True, 
+    #     shuffle=True, 
+    #     drop_last=True
+    # )
+    # for batch_i, (inp_, label_, mask_) in enumerate(train_loader2.dataloader()):
+    #     assert len(label_) == len(inp_), "label and input tensor should have the same batch size"
+    #     # print(batch_i)
+    # t2 = time()
+    # print("NumpyGenerator on cuda takes %0.3f secs to generate %i samples" % (t2 - t1, len(dataset)))

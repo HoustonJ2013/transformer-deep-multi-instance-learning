@@ -9,4 +9,4 @@ env: build
 
 jupyter:
 	echo ${ENV_VARS}
-	env ${ENV_VARS} jupyter notebook --allow-root --port 8890
+	env ${ENV_VARS} jupyter notebook --allow-root --port 8891 --NotebookApp.token='' --NotebookApp.password=''
