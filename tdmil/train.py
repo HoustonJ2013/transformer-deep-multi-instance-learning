@@ -171,6 +171,13 @@ def get_args_parser():
         help="""the target number for the mnst classifier""",
     )
     parser.add_argument(
+        "--mnst_target_strategy",
+        default="single",
+        type=str,
+        choices=["single", "two_sum"],
+        help="""the strategy to generate target for different task""",
+    )
+    parser.add_argument(
         "--mnst_target_multiples",
         default=1,
         type=int,
@@ -426,6 +433,7 @@ def train(args):
             label_tensor_path=args.mnst_train_label_path,
             batch_size=args.batch_size,
             target_number=args.mnst_target,
+            target_strategy=args.mnst_target_strategy, 
             bag_length_dist=args.mnst_bag_length_dist,
             max_bag_length=args.max_bag_length,
             mean_bag_length=args.mnst_mean_bag_length,
@@ -439,7 +447,8 @@ def train(args):
             label_tensor_path=args.mnst_test_label_path,
             batch_size=64,
             target_number=args.mnst_target,
-            bag_length_dist="normal",
+            target_strategy=args.mnst_target_strategy, 
+            bag_length_dist=args.mnst_bag_length_dist,
             max_bag_length=args.max_bag_length,
             mean_bag_length=args.mnst_mean_bag_length,
             var_bag_length=args.mnst_var_bag_length,
