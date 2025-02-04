@@ -30,6 +30,7 @@ class MnstBagsGenerator:
         bag_length_dist="normal",
         max_bag_length=30,
         mean_bag_length=20,
+        target_strategy="single",
         target_number=9,
         target_multiples=1,
         var_bag_length=5,
@@ -45,6 +46,7 @@ class MnstBagsGenerator:
         self.var_bag_length = var_bag_length
         self.num_bag = num_bag
         self.embedding = torch.load(embedding_tensor_path)  # MNST train size x embedding size
+        self.target_strategy = target_strategy
         self.labels = torch.load(label_tensor_path)
         self.embedding_size = self.embedding.shape[1]
         assert len(self.embedding) == len(
@@ -88,14 +90,38 @@ class MnstBagsGenerator:
                 [[1] * l + [0] * (self.max_bag_length - l) for l in random_bag_lengths], dtype=(torch.float32)
             )
             input_tensor = self.embedding[batched_random_indices]
-            label_tensor = (
-                torch.sum((self.labels[batched_random_indices] == self.target_number) * attention_mask, axis=1)
-                >= self.target_multiples
-            ).to(torch.float32)
+            if self.target_strategy == "single":
+                label_tensor = (
+                    torch.sum((self.labels[batched_random_indices] == self.target_number) * attention_mask, axis=1)
+                    >= self.target_multiples
+                ).to(torch.float32)
+            elif self.target_strategy == "two_sum":
+                label_tensor = twoSumLabel(self.labels[batched_random_indices], attention_mask, self.target_number)
+            else:
+                label_tensor = None 
             if return_indices:
                 yield input_tensor, label_tensor, attention_mask, torch.tensor(batched_random_indices)
             else:
                 yield input_tensor, label_tensor, attention_mask
+
+
+def twoSum(label, mask, target_number=9):
+    mask_n = int(torch.sum(mask))
+    label = label.numpy()
+    sum_set = set()
+    found = False
+    for i in range(mask_n):
+        if label[i] in sum_set:
+            found = True 
+            break
+        else: 
+            sum_set.add(target_number - label[i])
+    return found 
+
+
+def twoSumLabel(label_tensor, attetion_mask, target_number=9):
+    final_labels = [twoSum(label, mask, target_number) for label, mask in zip(label_tensor, attetion_mask)]
+    return torch.tensor(final_labels, dtype=torch.float32)
 
 
 class NumpyDataset:

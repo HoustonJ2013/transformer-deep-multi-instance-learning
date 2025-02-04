@@ -13,9 +13,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     jupyterlab \
     pandas \
     pre-commit \
+    scikit-learn \
     torchmetrics==0.10.3 \
     transformers \
     transformers-interpret \
-    xformers==0.0.18 
+    xformers==0.0.18 \
+    typing_extensions==4.7.1 
 
 RUN git config --global --add safe.directory /app
